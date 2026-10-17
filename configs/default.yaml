@@ -1,0 +1,33 @@
+camera:
+  device_id: 0           # 0 = первая камера. На Firefly может быть 0 или 1
+  fps: 30                # Сколько кадров в секунду просим у камеры
+  resolution: [640, 480] # Разрешение. 640x480 — золотая середина для скорости
+  warmup_frames: 30      # Камера первые кадры часто "тупит" — прогреваем
+
+model:
+  backend: "stub"                 # "rknn" | "onnx" | "stub" 
+  confidence_threshold: 0.7       # Если модель уверена меньше 70% — считаем "none"
+  classes:                        # Список жестов. Порядок важен — это индексы модели!
+    - "none"
+    - "ok"
+    - "fist"
+    - "peace"
+    - "stop"
+    - "like"
+    - "palm"
+    - "call"
+
+smoothing:
+  buffer_size: 7         # Сколько последних жестов помним
+  min_votes: 4           # Сколько из 7 должно совпасть, чтобы сменить паттерн
+  none_threshold: 5      # Сколько "none" подряд, чтобы погасить ленту
+
+led:
+  backend: "stub"        # "fire" | "stub" 
+  brightness: 128        # 0-255. На демо ставь 100-150, иначе слепит
+  enabled: true          # Можно выключить для тестов без ленты
+
+app:
+  show_debug_window: true  # Окно OpenCV с отладкой. На Firefly без монитора = false
+  target_fps: 15           # Целевой FPS. Если модель тормозит — снижай до 10
+  log_level: INFO
