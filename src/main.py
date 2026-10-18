@@ -76,12 +76,17 @@ def create_detector(config: dict) -> DetectorInterface:
         return StubDetector(classes=classes, threshold=threshold)
 
     # TODO: подключить реальные реализации
-    # if backend == "rknn":
-    #     from src.ml.rknn_detector import RKNN_detector
-    #     return RKNN_detector(config["model"])
-    # if backend == "onnx":
-    #     from src.ml.onnx_detector import ONNXDetector
-    #     return ONNXDetector(config["model"])
+    if backend == "rknn":
+        from ml.rknn_detector import RKNN_detector
+        return RKNN_detector(config["model"])
+    if backend == "onnx":
+        from ml.onnx_detector import ONNXDetector
+        return ONNXDetector(config["model"])
+
+    if backend == "pt":
+        from ml.pt_detector import PTDetector
+        logger.info("Используется PT детектор (ultralytics, CPU)")
+        return PTDetector(config["model"])
 
     raise ValueError(f"Неизвестный backend модели: {backend}")
 
@@ -148,9 +153,29 @@ class GestureControlApp:
         self._frame_times = []
         self._fps_window = 30
 
+        self._debug_window_name = "Gesture Control [DEBUG]"
+        self._debug_window_created = False
+
+        self._debug_save_enabled = bool(
+            self.config["app"].get("save_debug_frames", False)
+        )
+        self._debug_dir = Path(
+            self.config["app"].get("debug_dir", "debug_main")
+        )
+        self._debug_saved_count = 0
+        self._debug_max_saved = int(
+            self.config["app"].get("max_saved_debug_frames", 200)
+        )
+
+        if self._debug_save_enabled:
+            self._debug_dir.mkdir(parents=True, exist_ok=True)
+            logger.info("Debug-папка для кадров: %s", self._debug_dir.resolve())
+
         logger.info("Инициализация компонентов...")
         self.detector = create_detector(config)
         self.led = create_led_controller(config)
+
+        
 
         self.smoother = GestureSmoother(
             buffer_size=config["smoothing"]["buffer_size"],
@@ -211,30 +236,224 @@ class GestureControlApp:
 
         return 1.0 / avg_time if avg_time > 0 else 0.0
 
-    def _draw_debug_info(
-        self, frame: np.ndarray, gesture: str, confidence: float, fps: float
-    ) -> None:
+    @staticmethod
+    def _as_bgr_uint8(img: np.ndarray) -> np.ndarray:
         """
-        Рисует отладочную информацию поверх кадра изображения.
+        Приводит изображение к нормальному виду для OpenCV:
+        HWC, uint8, 3 канала, BGR.
 
-        Добавляет полупрозрачную подложку и текст с текущим жестом,
-        уверенностью модели и FPS. Изменяет переданный массив numpy inplace.
-
-        Args:
-            frame (np.ndarray): Кадр изображения в формате BGR, который будет изменён.
-            gesture (str): Текущий стабилизированный распознанный жест.
-            confidence (float): Уверенность модели в распознавании (от 0.0 до 1.0).
-            fps (float): Текущее значение FPS для отображения на экране.
+        Это нужно, чтобы debug-окно и cv2.imwrite не выдавали серые/битые картинки.
         """
-        _, w = frame.shape[:2]
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (0, 0), (w, 50), (0, 0, 0), -1)
-        cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
+        if img is None:
+            raise ValueError("img is None")
 
-        text = f"Gesture: {gesture}  |  conf: {confidence:.2f}  |  FPS: {fps:.1f}"
-        cv2.putText(
-            frame, text, (10, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2
+        # Если пришла пачка: (1, 3, H, W) или (1, H, W, 3)
+        if img.ndim == 4:
+            if img.shape[0] == 1:
+                img = img[0]
+            else:
+                raise ValueError(f"Unexpected batch dimension: {img.shape}")
+
+        # Если вдруг CHW: (3, H, W) -> (H, W, 3)
+        if img.ndim == 3 and img.shape[0] in (1, 3, 4) and img.shape[2] not in (1, 3, 4):
+            img = np.transpose(img, (1, 2, 0))
+
+        # Если float/half/int16/uint16 и т.п.
+        if img.dtype != np.uint8:
+            max_value = float(img.max()) if img.size > 0 else 0.0
+
+            # Если данные в диапазоне 0..1, умножаем на 255
+            if max_value <= 1.0:
+                img = img * 255.0
+
+            img = np.clip(img, 0, 255).astype(np.uint8)
+
+        # Gray -> BGR
+        if img.ndim == 2:
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+
+        # Channels fix
+        elif img.ndim == 3:
+            if img.shape[2] == 1:
+                img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+            elif img.shape[2] == 4:
+                img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+            elif img.shape[2] != 3:
+                raise ValueError(f"Unexpected number of channels: {img.shape}")
+        else:
+            raise ValueError(f"Unexpected image ndim: {img.ndim}, shape: {img.shape}")
+
+        return np.ascontiguousarray(img)
+
+    def _safe_imwrite(self, path: Path, img: np.ndarray) -> bool:
+        """
+        Безопасно сохраняет debug-кадр как обычный цветной JPEG.
+        """
+        try:
+            img = self._as_bgr_uint8(img)
+            path.parent.mkdir(parents=True, exist_ok=True)
+
+            ok = cv2.imwrite(
+                str(path),
+                img,
+                [int(cv2.IMWRITE_JPEG_QUALITY), 92],
+            )
+
+            if not ok:
+                logger.warning("cv2.imwrite вернул False для %s", path)
+
+            return ok
+
+        except Exception as e:
+            logger.warning("Не удалось сохранить debug-кадр %s: %s", path, e)
+            return False
+
+    # def _draw_debug_info(
+    #     self, frame: np.ndarray, gesture: str, confidence: float, fps: float
+    # ) -> None:
+    #     """
+    #     Рисует отладочную информацию поверх кадра изображения.
+
+    #     Добавляет полупрозрачную подложку и текст с текущим жестом,
+    #     уверенностью модели и FPS. Изменяет переданный массив numpy inplace.
+
+    #     Args:
+    #         frame (np.ndarray): Кадр изображения в формате BGR, который будет изменён.
+    #         gesture (str): Текущий стабилизированный распознанный жест.
+    #         confidence (float): Уверенность модели в распознавании (от 0.0 до 1.0).
+    #         fps (float): Текущее значение FPS для отображения на экране.
+    #     """
+    #     _, w = frame.shape[:2]
+    #     overlay = frame.copy()
+    #     cv2.rectangle(overlay, (0, 0), (w, 50), (0, 0, 0), -1)
+    #     cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
+
+    #     text = f"Gesture: {gesture}  |  conf: {confidence:.2f}  |  FPS: {fps:.1f}"
+    #     cv2.putText(
+    #         frame, text, (10, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2
+    #     )
+
+    def _make_debug_frame(
+        self,
+        frame: np.ndarray,
+        model_gesture: str,
+        model_confidence: float,
+        model_bbox: tuple[int, int, int, int] | None,
+        filtered_gesture: str,
+        stable_gesture: str,
+        fps: float,
+    ) -> np.ndarray:
+        """
+        Готовит debug-кадр для окна и сохранения.
+
+        Этот кадр считается "обработанным", если он прошёл через detector.detect()
+        и получил результат модели, даже если детекции нет.
+        """
+        annotated = self._as_bgr_uint8(frame).copy()
+        h, w = annotated.shape[:2]
+
+        has_bbox = model_bbox is not None
+
+        # Рисуем бокс, если модель вернула bbox
+        if has_bbox:
+            x1, y1, x2, y2 = map(int, model_bbox)
+
+            # Клипаем координаты в границы кадра
+            x1 = max(0, min(x1, w - 1))
+            y1 = max(0, min(y1, h - 1))
+            x2 = max(0, min(x2, w - 1))
+            y2 = max(0, min(y2, h - 1))
+
+            cv2.rectangle(
+                annotated,
+                (x1, y1),
+                (x2, y2),
+                (0, 255, 0),  # BGR green
+                2,
+            )
+
+            label = f"{model_gesture} {model_confidence:.2f}"
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            scale = 0.7
+            thickness = 2
+
+            (text_w, text_h), baseline = cv2.getTextSize(
+                label,
+                font,
+                scale,
+                thickness,
+            )
+
+            cv2.rectangle(
+                annotated,
+                (x1, max(0, y1 - text_h - baseline - 8)),
+                (x1 + text_w, y1),
+                (0, 255, 0),
+                -1,
+            )
+
+            cv2.putText(
+                annotated,
+                label,
+                (x1, max(text_h, y1 - baseline - 4)),
+                font,
+                scale,
+                (0, 0, 0),
+                thickness,
+                cv2.LINE_AA,
+            )
+
+        else:
+            cv2.putText(
+                annotated,
+                "NO BBOX / MODEL RETURNED NONE",
+                (20, 90),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (0, 0, 255),  # BGR red
+                2,
+                cv2.LINE_AA,
+            )
+
+        # Верхняя информационная плашка
+        overlay = annotated.copy()
+        cv2.rectangle(overlay, (0, 0), (w, 72), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.40, annotated, 0.60, 0, annotated)
+
+        text1 = (
+            f"MODEL: {model_gesture} {model_confidence:.3f} | "
+            f"BOX: {'YES' if has_bbox else 'NO'} | "
+            f"FPS: {fps:.1f}"
         )
+
+        text2 = (
+            f"PASS: {filtered_gesture} | "
+            f"STABLE: {stable_gesture}"
+        )
+
+        cv2.putText(
+            annotated,
+            text1,
+            (10, 28),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.60,
+            (0, 255, 0),
+            2,
+            cv2.LINE_AA,
+        )
+
+        cv2.putText(
+            annotated,
+            text2,
+            (10, 58),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.60,
+            (255, 255, 0),
+            2,
+            cv2.LINE_AA,
+        )
+
+        return annotated
 
     def run(self) -> None:
         """
@@ -287,25 +506,82 @@ class GestureControlApp:
                         self.led.show_gesture(stable_gesture)
                     last_led_gesture = stable_gesture
 
+                # if show_window:
+                #     frame_time = time.perf_counter() - loop_start
+                #     fps = self._update_fps(frame_time)
+                #     self._draw_debug_info(frame, stable_gesture, result.confidence, fps)
+                #     cv2.imshow("Gesture Control [DEBUG]", frame)
+
+                #     key = cv2.waitKey(1) & 0xFF
+                #     if key == 27 or key == ord("q"):
+                #         logger.info("Получен сигнал выхода (ESC/q)")
+                #         self.running = False
+
+                #     if (
+                #         cv2.getWindowProperty(
+                #             "Gesture Control [DEBUG]", cv2.WND_PROP_VISIBLE
+                #         )
+                #         < 1
+                #     ):
+                #         logger.info("Окно закрыто пользователем (крестик)")
+                #         self.running = False
+
                 if show_window:
+                    # Окно создаём сразу, до первой детекции
+                    if not self._debug_window_created:
+                        cv2.namedWindow(self._debug_window_name, cv2.WINDOW_NORMAL)
+                        cv2.resizeWindow(self._debug_window_name, 960, 720)
+                        self._debug_window_created = True
+
                     frame_time = time.perf_counter() - loop_start
                     fps = self._update_fps(frame_time)
-                    self._draw_debug_info(frame, stable_gesture, result.confidence, fps)
-                    cv2.imshow("Gesture Control [DEBUG]", frame)
+
+                    # Это и есть "обработанный кадр":
+                    # он прошёл через detector.detect(frame) и получил result.
+                    debug_frame = self._make_debug_frame(
+                        frame=frame,
+                        model_gesture=result.gesture,
+                        model_confidence=result.confidence,
+                        model_bbox=result.bbox,
+                        filtered_gesture=raw_gesture,
+                        stable_gesture=stable_gesture,
+                        fps=fps,
+                    )
+
+                    # Показываем ВСЕ обработанные кадры, даже если нет детекции
+                    cv2.imshow(self._debug_window_name, debug_frame)
+
+                    # Сохраняем ВСЕ обработанные кадры, если включено
+                    if (
+                        self._debug_save_enabled
+                        and self._debug_saved_count < self._debug_max_saved
+                    ):
+                        prefix = "box" if result.bbox is not None else "nobbox"
+                        out_path = (
+                            self._debug_dir
+                            / f"{prefix}_{self._debug_saved_count:06d}.jpg"
+                        )
+
+                        if self._safe_imwrite(out_path, debug_frame):
+                            self._debug_saved_count += 1
 
                     key = cv2.waitKey(1) & 0xFF
                     if key == 27 or key == ord("q"):
                         logger.info("Получен сигнал выхода (ESC/q)")
                         self.running = False
 
-                    if (
-                        cv2.getWindowProperty(
-                            "Gesture Control [DEBUG]", cv2.WND_PROP_VISIBLE
-                        )
-                        < 1
-                    ):
-                        logger.info("Окно закрыто пользователем (крестик)")
-                        self.running = False
+                    try:
+                        if (
+                            cv2.getWindowProperty(
+                                self._debug_window_name,
+                                cv2.WND_PROP_VISIBLE,
+                            )
+                            < 1
+                        ):
+                            logger.info("Окно закрыто пользователем (крестик)")
+                            self.running = False
+                    except cv2.error:
+                        self._debug_window_created = False
 
                 elapsed = time.perf_counter() - loop_start
                 sleep_time = frame_interval - elapsed
