@@ -13,12 +13,12 @@ env/
 .vscode/
 *.swp
 
-models/
+# models/
 datasets/
 data/
-*.rknn
-*.onnx
-*.pt
+# *.rknn
+# *.onnx
+# *.pt
 *.pth
 *.tflite
 !models/.gitkeep
