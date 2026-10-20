@@ -5,13 +5,12 @@ camera:
   warmup_frames: 30      # Камера первые кадры часто "тупит" — прогреваем
 
 model:
-  backend: "pt"                 # "rknn" | "onnx" | "stub" 
-  onnx_path: "src/ml/models/gesture_yolov8n.onnx"
+  backend: "onnx"                 # "rknn" | "onnx" | "stub" 
+  onnx_path: "src/ml/models/best.onnx"
   rknn_path: "src/ml/models/gesture_yolov8n.rknn"
-  input_normalization: "none"    # "none" = 0-255 float, "255" = 0-1
-  input_color: "bgr"             # "rgb" или "bgr"
-  confidence_threshold: 0.5       # Если модель уверена меньше 70% — считаем "none"
-  iou_threshold: 0.45
+  confidence_threshold: 0.8       # Если модель уверена меньше 70% — считаем "none"
+  imgsz: 224
+  crop_fraction: 0.9
   classes:                        # Список жестов. Порядок важен — это индексы модели!
     - "dislike"
     - "four"
@@ -24,7 +23,7 @@ model:
 smoothing:
   buffer_size: 7         # Сколько последних жестов помним
   min_votes: 4           # Сколько из 7 должно совпасть, чтобы сменить паттерн
-  none_threshold: 10      # Сколько "none" подряд, чтобы погасить ленту
+  none_threshold: 5      # Сколько "none" подряд, чтобы погасить ленту
 
 led:
   backend: "stub"        # "fire" | "stub" 

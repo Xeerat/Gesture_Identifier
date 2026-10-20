@@ -1,74 +1,69 @@
+"""
+RKNN-детектор жестов для classification-модели (плата rk3588).
+Вход: float32 NCHW [0,255]; /255 встроено в .rknn через std_values=255.
+Выход модели: вероятности [1,7] (softmax уже в графе).
+"""
+
 import logging
-from pathlib import Path
+from typing import Any, Dict, List
+
 import numpy as np
 
-from interfaces import DetectorInterface, DetectionResult
-from cv.preprocess import preprocess_frame
-from cv.postprocess import decode_yolov8_output, rescale_boxes
+from cv.preprocess import preprocess_frame_rknn
+from cv.postprocess import decode_classification_output
+from interfaces import DetectionResult, DetectorInterface
 
 logger = logging.getLogger(__name__)
 
 
 class RKNN_detector(DetectorInterface):
-    """Детектор жестов через RKNN (режим платы Firefly)."""
 
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: Dict[str, Any]) -> None:
         from rknnlite.api import RKNNLite
 
-        self.classes = config.get("classes", ["none"])
-        self.threshold = config.get("confidence_threshold", 0.7)
-        self.iou_thresh = config.get("iou_threshold", 0.45)
+        self._classes: List[str] = list(config.get("classes", []))
+        self._threshold = float(config.get("confidence_threshold", 0.5))
+        self._imgsz = int(config.get("imgsz", 224))
 
-        model_path = config.get("rknn_path", "models/gesture_yolov8n.rknn")
-        if not Path(model_path).exists():
+        model_path = config.get("rknn_path", "src/ml/models/best.rknn")
+
+        self._rknn = RKNNLite()
+        if self._rknn.load_rknn(model_path) != 0:
             raise FileNotFoundError(f"RKNN модель не найдена: {model_path}")
+        if self._rknn.init_runtime() != 0:
+            raise RuntimeError("Не удалось инициализировать RKNN runtime")
 
-        logger.info(f"Загрузка RKNN модели: {model_path}")
-        self.rknn = RKNNLite()
-        self.rknn.load_rknn(model_path)
-        self.rknn.init_runtime()
+        logger.info("RKNN детектор успешно инициализирован")
 
     def detect(self, frame: np.ndarray) -> DetectionResult:
-        orig_shape = frame.shape[:2]
+        if frame is None:
+            return DetectionResult(gesture="none", confidence=0.0)
 
-        img_rgb, ratio, pad = preprocess_frame(frame)
-        input_tensor = np.expand_dims(img_rgb, axis=0)
+        tensor = preprocess_frame_rknn(frame, imgsz=self._imgsz)
 
-        raw_output = self.rknn.inference(inputs=[input_tensor])[0]
-        boxes = decode_yolov8_output(
-            raw_output, conf_thresh=self.threshold, iou_thresh=self.iou_thresh
+        outputs = self._rknn.inference(inputs=[tensor])
+        if not outputs:
+            return DetectionResult(gesture="none", confidence=0.0)
+
+        probs = np.asarray(outputs[0], dtype=np.float32)
+
+        gesture, confidence, _ = decode_classification_output(
+            probs,
+            classes=self._classes,
+            confidence_threshold=self._threshold,
         )
 
-        if len(boxes) > 0:
-            boxes = rescale_boxes(boxes, ratio, pad, orig_shape)
-            best_idx = int(np.argmax(boxes[:, 4]))
-            best_box = boxes[best_idx]
-
-            confidence = float(best_box[4])
-            class_id = int(best_box[5])
-            gesture = (
-                self.classes[class_id] if class_id < len(self.classes) else "none"
-            )
-            bbox = (
-                int(best_box[0]),
-                int(best_box[1]),
-                int(best_box[2]),
-                int(best_box[3]),
-            )
-
-            return DetectionResult(
-                gesture=gesture, confidence=confidence, bbox=bbox
-            )
-
-        return DetectionResult(gesture="none", confidence=0.0)
-
-    def warmup(self, frames_count: int = 10) -> None:
-        logger.info(f"Прогрев NPU ({frames_count} кадров)...")
-        dummy = np.zeros((480, 640, 3), dtype=np.uint8)
-        for _ in range(frames_count):
-            self.detect(dummy)
+        return DetectionResult(gesture=gesture, confidence=confidence)
 
     def close(self) -> None:
-        if hasattr(self, "rknn"):
-            self.rknn.release()
-        logger.info("RKNN детектор остановлен.")
+        if hasattr(self, "_rknn"):
+            self._rknn.release()
+        logger.info("Ресурсы RKNN детектора освобождены.")
+        return super().close()
+
+    def warmup(self, frames_count: int = 10) -> None:
+        dummy = np.zeros((480, 640, 3), dtype=np.uint8)
+        for _ in range(max(0, int(frames_count))):
+            self.detect(dummy)
+        logger.info("Прогрев RKNN детектора успешно выполнен.")
+        return super().warmup(frames_count)

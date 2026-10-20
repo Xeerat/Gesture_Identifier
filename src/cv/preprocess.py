@@ -1,76 +1,63 @@
 """
-Модуль предобработки кадров для модели распознавания жестов.
-Логика предоставлена ML-инженером, математика не меняется.
-Добавлены отладочные логи на каждом этапе.
+Предобработка для YOLO classification.
+Геометрия повторяет classify_transforms из Ultralytics:
+    Resize(bilinear) короткой стороны -> CenterCrop(imgsz).
+
+Две функции выхода:
+    preprocess_frame     -> float32 NCHW [0,1]      (для ONNX Runtime)
+    preprocess_frame_rknn-> float32 NCHW [0,255]    (для RKNN, /255 встроено в модель)
 """
-from typing import Tuple
-import logging
 
 import cv2
 import numpy as np
 
-logger = logging.getLogger(__name__)
 
-
-def letterbox(
-    img: np.ndarray,
-    new_shape: Tuple[int, int] = (640, 640),
-    color: Tuple[int, int, int] = (114, 114, 114),
-) -> Tuple[np.ndarray, Tuple[float, float], Tuple[float, float]]:
-    """Resize с сохранением пропорций + padding."""
-    shape = img.shape[:2]  # [h, w]
-    r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
-    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
-    dw = (new_shape[1] - new_unpad[0]) / 2
-    dh = (new_shape[0] - new_unpad[1]) / 2
-
-    logger.info(
-        "[PREPROCESS] letterbox: orig_shape=%s ratio=%.4f new_unpad=%s pad=(dw=%.1f, dh=%.1f)",
-        shape, r, new_unpad, dw, dh,
-    )
-
-    if shape[::-1] != new_unpad:
-        img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR)
-        logger.info("[PREPROCESS] после resize: shape=%s", img.shape)
+def _resize_short_side(img: np.ndarray, target: int) -> np.ndarray:
+    h, w = img.shape[:2]
+    if h < w:
+        new_h = target
+        new_w = int(round(w * target / h))
     else:
-        logger.info("[PREPROCESS] resize не потребовался")
-
-    top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
-    left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
-    img = cv2.copyMakeBorder(
-        img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color
-    )
-    logger.info(
-        "[PREPROCESS] после padding: shape=%s borders=(top=%d,bottom=%d,left=%d,right=%d)",
-        img.shape, top, bottom, left, right,
-    )
-
-    return img, (r, r), (dw, dh)
+        new_w = target
+        new_h = int(round(h * target / w))
+    return cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
 
 
-def preprocess_frame(
-    frame_bgr: np.ndarray,
-) -> Tuple[np.ndarray, Tuple[float, float], Tuple[float, float]]:
-    """
-    Полная предобработка кадра.
-    Input:  BGR кадр с камеры.
-    Output: (RGB uint8 [640,640,3], ratio, pad)
-    """
-    logger.info(
-        "[PREPROCESS] ВХОД: shape=%s dtype=%s min=%d max=%d",
-        frame_bgr.shape, frame_bgr.dtype,
-        int(frame_bgr.min()), int(frame_bgr.max()),
-    )
+def _center_crop(img: np.ndarray, size: int) -> np.ndarray:
+    h, w = img.shape[:2]
 
-    img, ratio, pad = letterbox(frame_bgr, new_shape=(640, 640))
+    if h < size or w < size:
+        pad_top = max(0, (size - h) // 2)
+        pad_bottom = max(0, size - h - pad_top)
+        pad_left = max(0, (size - w) // 2)
+        pad_right = max(0, size - w - pad_left)
+        img = cv2.copyMakeBorder(
+            img, pad_top, pad_bottom, pad_left, pad_right,
+            cv2.BORDER_CONSTANT, value=(0, 0, 0),
+        )
+        h, w = img.shape[:2]
 
-    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    top = (h - size) // 2
+    left = (w - size) // 2
+    return img[top:top + size, left:left + size]
 
-    logger.info(
-        "[PREPROCESS] ВЫХОД: shape=%s dtype=%s min=%d max=%d ratio=%s pad=%s",
-        img_rgb.shape, img_rgb.dtype,
-        int(img_rgb.min()), int(img_rgb.max()),
-        ratio, pad,
-    )
 
-    return img_rgb, ratio, pad
+def _geometry(frame_bgr: np.ndarray, imgsz: int) -> np.ndarray:
+    """BGR uint8 -> RGB uint8, resize + center crop. Возвращает HWC uint8."""
+    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    resized = _resize_short_side(rgb, imgsz)
+    return _center_crop(resized, imgsz)
+
+
+def preprocess_frame(frame_bgr: np.ndarray, imgsz: int = 224) -> np.ndarray:
+    """Для ONNX: float32 NCHW в диапазоне [0, 1]."""
+    hwc = _geometry(frame_bgr, imgsz)
+    chw = hwc.transpose(2, 0, 1).astype(np.float32) / 255.0
+    return np.ascontiguousarray(chw[None, ...], dtype=np.float32)
+
+
+def preprocess_frame_rknn(frame_bgr: np.ndarray, imgsz: int = 224) -> np.ndarray:
+    """Для RKNN: float32 NCHW в диапазоне [0, 255] (нормализация встроена в .rknn)."""
+    hwc = _geometry(frame_bgr, imgsz)
+    chw = hwc.transpose(2, 0, 1).astype(np.float32)
+    return np.ascontiguousarray(chw[None, ...], dtype=np.float32)
