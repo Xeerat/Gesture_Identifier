@@ -1,16 +1,11 @@
-camera:
-  device_id: 0           # 0 = первая камера. На Firefly может быть 0 или 1
-  fps: 60                # Сколько кадров в секунду просим у камеры
-  resolution: [640, 480] # Разрешение. 640x480 — золотая середина для скорости
-  warmup_frames: 30      # Камера первые кадры часто "тупит" — прогреваем
+app:
+  log_level: INFO          # Уровень выводимых логов
+  show_debug_window: true  # Окно OpenCV с отладкой. На Firefly без монитора = false
+  target_fps: 15           # Целевой FPS. Если модель тормозит — снижай до 10
 
 model:
   backend: "onnx"                 # "rknn" | "onnx" | "stub" 
-  onnx_path: "src/ml/models/best.onnx"
-  rknn_path: "src/ml/models/best.rknn"
   confidence_threshold: 0.8       # Если модель уверена меньше 70% — считаем "none"
-  imgsz: 224
-  crop_fraction: 0.9
   classes:                        # Список жестов. Порядок важен — это индексы модели!
     - "dislike"
     - "four"
@@ -19,18 +14,23 @@ model:
     - "palm"
     - "rock"
     - "stop"
+  onnx_path: "ml/models/best.onnx"  # Путь до весов модели в формате "onnx"
+  rknn_path: "ml/models/best.rknn"  # Путь до весов модели в формате "rknn"
+  imgsz: 224                            # Размер входного изображения
+
+led:
+  enabled: true          # Можно выключить для тестов без ленты
+  backend: "fire"   # "fire" | "stub"
+  brightness: 128        # Яркость 0-255
 
 smoothing:
   buffer_size: 7         # Сколько последних жестов помним
   min_votes: 4           # Сколько из 7 должно совпасть, чтобы сменить паттерн
   none_threshold: 5      # Сколько "none" подряд, чтобы погасить ленту
 
-led:
-  backend: "stub"        # "fire" | "stub" 
-  brightness: 128        # 0-255. На демо ставь 100-150, иначе слепит
-  enabled: true          # Можно выключить для тестов без ленты
+camera:
+  device_id: 0           # 0 = первая камера. На Firefly может быть 0 или 1
+  fps: 60                # Сколько кадров в секунду просим у камеры
+  resolution: [640, 480] # Разрешение. 640x480 — золотая середина для скорости
+  warmup_frames: 30      # Камера первые кадры часто "тупит" — прогреваем
 
-app:
-  show_debug_window: true  # Окно OpenCV с отладкой. На Firefly без монитора = false
-  target_fps: 15           # Целевой FPS. Если модель тормозит — снижай до 10
-  log_level: INFO

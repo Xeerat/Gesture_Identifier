@@ -9,11 +9,7 @@ import cv2
 import numpy as np
 import yaml
 
-from embedded.stub_led import StubLEDController
 from interfaces import DetectorInterface, LEDControllerInterface
-
-# Заглушки (позже заменятся реальными реализациями из cv/, ml/, embedded/)
-from ml.stub_detector import StubDetector
 from utils.config_loader import load_config
 from utils.smoothing import GestureSmoother
 
@@ -68,19 +64,23 @@ def create_detector(config: dict) -> DetectorInterface:
     """
 
     backend = config["model"].get("backend", "stub")
-    classes = config["model"].get("classes", ["none"])
-    threshold = config["model"].get("confidence_threshold", 0.7)
 
     if backend == "stub":
         logger.info("Используется заглушка детектора (StubDetector)")
-        return StubDetector(classes=classes, threshold=threshold)
+        from ml.stub_detector import StubDetector
 
-    # TODO: подключить реальные реализации
-    if backend == "rknn":
+        return StubDetector(config["model"])
+
+    elif backend == "rknn":
+        logger.info("Используется RKNN детектор")
         from ml.rknn_detector import RKNN_detector
+
         return RKNN_detector(config["model"])
-    if backend == "onnx":
+
+    elif backend == "onnx":
+        logger.info("Используется ONNX детектор")
         from ml.onnx_detector import ONNXDetector
+
         return ONNXDetector(config["model"])
 
     raise ValueError(f"Неизвестный backend модели: {backend}")
@@ -113,12 +113,15 @@ def create_led_controller(config: dict) -> LEDControllerInterface | None:
 
     if backend == "stub":
         logger.info("Используется заглушка LED-контроллера (StubLEDController)")
+        from embedded.stub_led import StubLEDController
+
         return StubLEDController()
 
-    # TODO: подключить реальную реализацию
-    # from src.embedded.firefly_led import FireflyLEDController
-    # if backend == "fire":
-    #     return FireflyLEDController(config["led"])
+    elif backend == "fire":
+        logger.info("Используется OLEDController")
+        from embedded.led_controller import OLEDController
+
+        return OLEDController()
 
     raise ValueError(f"Неизвестный backend модели: {backend}")
 
@@ -173,10 +176,11 @@ class GestureControlApp:
         Raises:
             RuntimeError: Если не удалось открыть камеру по указанному device_id.
         """
-        cam_cfg = self.config["camera"]
-        device_id = cam_cfg.get("device_id", 0)
-        width, height = cam_cfg.get("resolution", [640, 480])
-        fps = cam_cfg.get("fps", 30)
+
+        device_id = self.config["camera"].get("device_id", 0)
+        width, height = self.config["camera"].get("resolution", [640, 480])
+        fps = self.config["camera"].get("fps", 30)
+        warmup = self.config["camera"].get("warmup_frames", 30)
 
         logger.info(f"Открытие камеры {device_id} ({width}x{height})")
         self.cap = cv2.VideoCapture(device_id)
@@ -187,11 +191,11 @@ class GestureControlApp:
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         self.cap.set(cv2.CAP_PROP_FPS, fps)
 
-        warmup = cam_cfg.get("warmup_frames", 30)
         logger.info(f"Прогрев камеры ({warmup} кадров)...")
         for _ in range(warmup):
             self.cap.read()
-        logger.info("Камера готова")
+
+        logger.info("Камера готова к использованию")
 
     def _update_fps(self, frame_time: float) -> float:
         """

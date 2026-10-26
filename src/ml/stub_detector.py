@@ -17,18 +17,16 @@ class StubDetector(DetectorInterface):
     Используется на этапе разработки, пока реальная модель не подключена.
     """
 
-    def __init__(self, classes: list[str], threshold: float = 0.7) -> None:
+    def __init__(self, config: dict) -> None:
         """
         Инициализирует заглушку детектора.
 
         Args:
-            classes (list[str]): Список всех возможных классов жестов.
-            threshold (float, optional): Вероятность успешного "распознавания"
-                жеста (от 0.0 до 1.0). По умолчанию 0.7.
+            config (dict): словарь с настройками модели
         """
-        self._classes = classes
-        self._threshold = threshold
-        self._gestures = [c for c in classes if c != "none"]
+        self._classes = config.get("classes", ["none"])
+        self._threshold = float(config.get("confidence_threshold", 0.7))
+        self._gestures = [c for c in self._classes if c != "none"]
 
         logger.info("Детектор успешно инициализирован")
 
