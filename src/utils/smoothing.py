@@ -41,8 +41,8 @@ class GestureSmoother:
         self.min_votes = min_votes
         self.none_threshold = none_threshold
 
-        self._buffer: deque[str] = deque(maxlen=buffer_size)
-        self._current_gesture: str = "none"
+        self._buffer = deque(maxlen=buffer_size)
+        self._current_gesture = "none"
 
         logger.info("Модуль сглаживания успешно инициализирован")
 
