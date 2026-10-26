@@ -76,12 +76,12 @@ def create_detector(config: dict) -> DetectorInterface:
         return StubDetector(classes=classes, threshold=threshold)
 
     # TODO: подключить реальные реализации
-    # if backend == "rknn":
-    #     from src.ml.rknn_detector import RKNN_detector
-    #     return RKNN_detector(config["model"])
-    # if backend == "onnx":
-    #     from src.ml.onnx_detector import ONNXDetector
-    #     return ONNXDetector(config["model"])
+    if backend == "rknn":
+        from ml.rknn_detector import RKNN_detector
+        return RKNN_detector(config["model"])
+    if backend == "onnx":
+        from ml.onnx_detector import ONNXDetector
+        return ONNXDetector(config["model"])
 
     raise ValueError(f"Неизвестный backend модели: {backend}")
 

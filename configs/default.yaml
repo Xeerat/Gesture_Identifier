@@ -1,21 +1,24 @@
 camera:
   device_id: 0           # 0 = первая камера. На Firefly может быть 0 или 1
-  fps: 30                # Сколько кадров в секунду просим у камеры
+  fps: 60                # Сколько кадров в секунду просим у камеры
   resolution: [640, 480] # Разрешение. 640x480 — золотая середина для скорости
   warmup_frames: 30      # Камера первые кадры часто "тупит" — прогреваем
 
 model:
-  backend: "stub"                 # "rknn" | "onnx" | "stub" 
-  confidence_threshold: 0.7       # Если модель уверена меньше 70% — считаем "none"
+  backend: "onnx"                 # "rknn" | "onnx" | "stub" 
+  onnx_path: "src/ml/models/best.onnx"
+  rknn_path: "src/ml/models/best.rknn"
+  confidence_threshold: 0.8       # Если модель уверена меньше 70% — считаем "none"
+  imgsz: 224
+  crop_fraction: 0.9
   classes:                        # Список жестов. Порядок важен — это индексы модели!
-    - "none"
-    - "ok"
-    - "fist"
-    - "peace"
-    - "stop"
+    - "dislike"
+    - "four"
     - "like"
+    - "one"
     - "palm"
-    - "call"
+    - "rock"
+    - "stop"
 
 smoothing:
   buffer_size: 7         # Сколько последних жестов помним
